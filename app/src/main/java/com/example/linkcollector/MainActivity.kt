@@ -129,8 +129,11 @@ class MainActivity : AppCompatActivity() {
                 linksEditText.setSelection(linksEditText.text.length)
             }
         }
+
         undoButton.setOnLongClickListener {
             linksEditText.setText("")
+            lastDebridedLinks = emptyList() // ←古い変換済みリンクの記憶もリセットしておくと安全です
+            updateButtonState(false) // ←これでボタンが「CONVERT」に戻り、isShareModeも解除されます
             true
         }
 
