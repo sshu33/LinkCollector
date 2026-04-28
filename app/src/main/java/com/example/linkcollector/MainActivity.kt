@@ -6,13 +6,11 @@ import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
 import android.os.Bundle
-import android.view.Gravity
 import android.view.View
 import android.widget.Button
 import android.widget.EditText
 import android.widget.ImageButton
 import android.widget.TextView
-import android.widget.Toast
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
 import androidx.lifecycle.lifecycleScope
@@ -22,27 +20,37 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import retrofit2.Retrofit
 import retrofit2.converter.gson.GsonConverterFactory
-import retrofit2.http.GET
-import retrofit2.http.Query
+import retrofit2.Response
+import androidx.core.view.ViewCompat
+import androidx.core.view.WindowCompat
+import androidx.core.view.WindowInsetsCompat
+import android.view.LayoutInflater
+import com.google.android.material.bottomsheet.BottomSheetDialog
+import com.google.android.material.textfield.TextInputEditText
+import retrofit2.http.Field
+import retrofit2.http.FormUrlEncoded
+import retrofit2.http.Header
+import retrofit2.http.POST
 
-// --- Alldebrid API の設定 ---
-interface AlldebridApiService {
-    @GET("link/unlock")
+
+// --- Real-Debrid API の設定 ---
+interface RealDebridApiService {
+    @FormUrlEncoded
+    @POST("unrestrict/link")
     suspend fun unlockLink(
-        @Query("agent") agent: String = "LinkCollectorApp",
-        @Query("apikey") apikey: String, // ← ★コロンを削除しました！
-        @Query("link") link: String
-    ): UnlockResponse
+        @Header("Authorization") authHeader: String,
+        @Field("link") link: String
+    ): Response<RdUnlockResponse>
 }
-data class UnlockResponse(val status: String, val data: LinkData?, val error: ApiError?)
-data class LinkData(val link: String, val filename: String)
-data class ApiError(val code: String, val message: String)
+
+data class RdUnlockResponse(
+    val id: String?,
+    val filename: String?,
+    val download: String? // 変換後リンク
+)
 
 // --- メインのアクティビティ ---
 class MainActivity : AppCompatActivity() {
-
-    // あなたのAlldebridのAPIキー
-    private val alldebridApiKey = "G12kZINsBcZI5wzK3NlT"
 
     private var lastDebridedLinks: List<String> = emptyList() // ★追加：最後に変換成功したリンクを保持
     private var isShareMode = false // ★追加：現在がShareモードかどうかを判断するフラグ
@@ -73,19 +81,24 @@ class MainActivity : AppCompatActivity() {
     private lateinit var openBrowserButton: Button
     private lateinit var historyButton: ImageButton
     private lateinit var messageTextView: TextView
+    private lateinit var settingsButton: ImageButton
 
-    private val alldebridApi by lazy {
+    private val realDebridApi by lazy {
         Retrofit.Builder()
-            .baseUrl("https://api.alldebrid.com/v4/")
+            .baseUrl("https://api.real-debrid.com/rest/1.0/")
             .addConverterFactory(GsonConverterFactory.create(GsonBuilder().create()))
             .build()
-            .create(AlldebridApiService::class.java)
+            .create(RealDebridApiService::class.java)
     }
 
     private val historyDao by lazy { AppDatabase.getDatabase(this).historyDao() }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+
+        // ★ Edge-to-edge を有効化（ここで宣言しないと WindowInsets が取れない）
+        WindowCompat.setDecorFitsSystemWindows(window, false)
+
         setContentView(R.layout.activity_main)
 
         linksEditText = findViewById(R.id.linksEditText)
@@ -96,6 +109,26 @@ class MainActivity : AppCompatActivity() {
         openBrowserButton = findViewById(R.id.openBrowserButton)
         historyButton = findViewById(R.id.historyButton)
         messageTextView = findViewById(R.id.messageTextView)
+        settingsButton = findViewById(R.id.settingsButton)
+
+        // ★ ルートViewにシステムバー分のpadding を動的に適用
+        val rootView = findViewById<androidx.constraintlayout.widget.ConstraintLayout>(R.id.rootLayout)
+        ViewCompat.setOnApplyWindowInsetsListener(rootView) { view, insets ->
+            val systemBars = insets.getInsets(WindowInsetsCompat.Type.systemBars())
+            // XMLの元のpadding(16dp)にシステムバー分を上乗せ
+            val dp16 = (16 * resources.displayMetrics.density).toInt()
+            view.setPadding(
+                dp16,
+                systemBars.top + dp16,
+                dp16,
+                systemBars.bottom + dp16
+            )
+            WindowInsetsCompat.CONSUMED
+        }
+
+        settingsButton.setOnClickListener {
+            showApiKeyDialog()
+        }
 
         setupButtonListeners()
     }
@@ -164,57 +197,115 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    private fun getApiKey(): String {
+        val prefs = getSharedPreferences("AppPrefs", Context.MODE_PRIVATE)
+        return prefs.getString("rd_api_key", "") ?: ""
+    }
+
+    private fun saveApiKey(key: String) {
+        val prefs = getSharedPreferences("AppPrefs", Context.MODE_PRIVATE)
+        prefs.edit().putString("rd_api_key", key).apply()
+    }
+
+    private fun showApiKeyDialog() {
+        val dialog = BottomSheetDialog(this)
+        val view = LayoutInflater.from(this).inflate(R.layout.dialog_api_key, null)
+        dialog.setContentView(view)
+
+        // 背景を角丸にする
+        dialog.window?.findViewById<View>(
+            com.google.android.material.R.id.design_bottom_sheet
+        )?.setBackgroundResource(android.R.color.transparent)
+
+        val editText = view.findViewById<TextInputEditText>(R.id.apiKeyEditText)
+        val saveButton = view.findViewById<Button>(R.id.saveButton)
+        val cancelButton = view.findViewById<Button>(R.id.cancelButton)
+
+        editText.setText(getApiKey())
+
+        saveButton.setOnClickListener {
+            val key = editText.text.toString().trim()
+            saveApiKey(key)
+            showToast("APIキーを保存しました")
+            dialog.dismiss()
+        }
+
+        cancelButton.setOnClickListener {
+            dialog.dismiss()
+        }
+
+        dialog.show()
+    }
+
     private fun debridLinks() {
         val originalLinks = linksEditText.text.toString()
         val links = originalLinks.lines().filter { it.isNotBlank() }
+
         if (links.isEmpty()) {
             showToast("リンクが入力されていません")
             return
         }
-        if (alldebridApiKey.isBlank()) {
+
+        val apiKey = getApiKey()
+        if (apiKey.isBlank()) {
             showToast("APIキーが設定されていません")
+            showApiKeyDialog()
             return
         }
+
         showToast("変換を開始します...")
         linksEditText.setText("変換中...\n\n")
+
         lifecycleScope.launch {
             val debridedLinks = mutableListOf<String>()
             var authenticationErrorOccurred = false
+
             for (link in links) {
                 try {
                     val response = withContext(Dispatchers.IO) {
-                        alldebridApi.unlockLink(apikey = alldebridApiKey, link = link)
+                        // 【変更点】realDebridApi を使い、ヘッダーに "Bearer キー" を入れる
+                        realDebridApi.unlockLink(authHeader = "Bearer $apiKey", link = link)
                     }
-                    if (response.status == "success" && response.data != null) {
-                        debridedLinks.add(response.data.link)
-                        linksEditText.append("成功: ${response.data.filename}\n")
-                        val historyItem = HistoryItem(
-                            filename = response.data.filename,
-                            premiumLink = response.data.link,
-                            timestamp = System.currentTimeMillis()
-                        )
-                        withContext(Dispatchers.IO) {
-                            historyDao.insert(historyItem)
+
+                    if (response.isSuccessful) {
+                        val body = response.body()
+                        // 【変更点】Real-Debridの返り値のキー 'download' を使う
+                        if (body?.download != null) {
+                            debridedLinks.add(body.download)
+                            val filename = body.filename ?: "unknown"
+                            linksEditText.append("成功: $filename\n")
+
+                            val historyItem = HistoryItem(
+                                filename = filename,
+                                premiumLink = body.download,
+                                timestamp = System.currentTimeMillis()
+                            )
+                            withContext(Dispatchers.IO) {
+                                historyDao.insert(historyItem)
+                            }
+                        } else {
+                            linksEditText.append("失敗: リンク取得エラー\n")
                         }
                     } else {
-                        if (response.error?.code == "AUTH_BAD_APIKEY") {
+                        if (response.code() == 401 || response.code() == 403) {
                             authenticationErrorOccurred = true
                             break
                         }
-                        val errorMessage = response.error?.message ?: "不明なエラー"
-                        linksEditText.append("失敗: $errorMessage\n")
+                        linksEditText.append("失敗: HTTPエラー ${response.code()}\n")
                     }
                 } catch (e: Exception) {
-                    linksEditText.append("失敗: ${e.message}\n")
+                    linksEditText.append("失敗: 通信エラー\n")
                 }
             }
+
             if (authenticationErrorOccurred) {
-                showToast("Alldebridの認証が切れました")
+                showToast("Real-Debridの認証エラー。APIキーを確認してください。")
                 linksEditText.setText(originalLinks)
+                showApiKeyDialog()
             } else {
                 val resultText = debridedLinks.joinToString("\n")
                 linksEditText.setText(resultText)
-                showToast("変換完了！") // ←ここも統一
+                showToast("変換完了！")
                 lastDebridedLinks = debridedLinks
                 updateButtonState(true)
             }

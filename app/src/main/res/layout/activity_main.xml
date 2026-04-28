@@ -2,11 +2,14 @@
 <androidx.constraintlayout.widget.ConstraintLayout xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:app="http://schemas.android.com/apk/res-auto"
     xmlns:tools="http://schemas.android.com/tools"
+    android:id="@+id/rootLayout"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
     android:background="@color/app_background_gray"
     android:padding="16dp"
     tools:context=".MainActivity">
+
+
 
     <TextView
         android:id="@+id/titleTextView"
@@ -21,7 +24,20 @@
         app:layout_constraintStart_toStartOf="parent"
         app:layout_constraintTop_toTopOf="parent" />
 
-    <!-- === ボタン類を画面端基準で再配置 === -->
+    <ImageButton
+        android:id="@+id/settingsButton"
+        android:layout_width="48dp"
+        android:layout_height="48dp"
+        android:background="?attr/selectableItemBackgroundBorderless"
+        android:padding="12dp"
+        android:scaleType="fitCenter"
+        android:src="@drawable/ic_settings"
+        app:tint="@color/title_text_color"
+        app:layout_constraintTop_toTopOf="@+id/titleTextView"
+        app:layout_constraintBottom_toBottomOf="@+id/titleTextView"
+        app:layout_constraintEnd_toEndOf="parent"
+        tools:ignore="ContentDescription" />
+
 
     <!-- 下段 -->
     <ImageButton
@@ -32,7 +48,7 @@
         android:padding="8dp"
         android:scaleType="fitCenter"
         android:src="@drawable/ic_copy"
-        android:tint="@color/button_lime"
+        app:tint="@color/button_lime"
         app:layout_constraintBottom_toBottomOf="parent"
         app:layout_constraintStart_toStartOf="parent"
         tools:ignore="ContentDescription" />
@@ -45,7 +61,7 @@
         android:padding="3dp"
         android:scaleType="fitCenter"
         android:src="@drawable/ic_refresh"
-        android:tint="@color/button_lime"
+        app:tint="@color/button_lime"
         app:layout_constraintBottom_toBottomOf="parent"
         app:layout_constraintEnd_toEndOf="parent"
         tools:ignore="ContentDescription" />
@@ -74,7 +90,7 @@
         android:padding="8dp"
         android:scaleType="fitCenter"
         android:src="@drawable/ic_paste"
-        android:tint="@color/button_lime"
+        app:tint="@color/button_lime"
         app:layout_constraintBottom_toTopOf="@+id/copyButton"
         app:layout_constraintStart_toStartOf="parent"
         tools:ignore="ContentDescription" />
@@ -88,7 +104,7 @@
         android:padding="4dp"
         android:scaleType="fitCenter"
         android:src="@drawable/ic_history"
-        android:tint="@color/button_lime"
+        app:tint="@color/button_lime"
         app:layout_constraintBottom_toTopOf="@+id/undoButton"
         app:layout_constraintEnd_toEndOf="parent"
         tools:ignore="ContentDescription" />

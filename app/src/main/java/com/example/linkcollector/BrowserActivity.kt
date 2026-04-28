@@ -39,60 +39,53 @@ class BrowserActivity : AppCompatActivity() {
             override fun shouldOverrideUrlLoading(view: WebView?, url: String?): Boolean {
                 if (url == null) return false
 
-                // --- ここからが新しい判定コード ---
                 val supportedHosts = listOf(
-                    // Premium hosts
+                    // ─── メジャーホスト ───
                     "1fichier.com",
                     "rapidgator.net",
                     "turbobit.net",
                     "hitfile.net",
-                    "w.wayupload.com", // wayupload
-                    "mega.nz", // mega
+                    "mega.nz",
                     "4shared.com",
-                    "alfafile.net",
-                    "apkadmin.com",
-                    "cloudvideo.tv",
+                    "mediafire.com",
+                    "drive.google.com",
+                    "scribd.com",
+                    "pixeldrain.com",
+                    "filefactory.com",
+
+                    // ─── アップローダー系 ───
                     "ddownload.com",
-                    "dropapk.com",
-                    "dropgalaxy.com", // dropgalaxy.co, .in etc.
                     "fastbit.cc",
-                    "file-upload.com",
-                    "fileal.com",
                     "filedot.to",
                     "filespace.com",
-                    "gigapeta.com",
-                    "drive.google.com", // google
                     "hexupload.net",
-                    "isra.cloud", // isra
+                    "isra.cloud",
                     "katfile.com",
-                    "mediafire.com",
                     "mexashare.com",
-                    "modsbase.com",
                     "mp4upload.com",
+                    "nitroflare.com",
                     "prefiles.com",
-                    "scribd.com",
-                    "sendit.cloud", // sendit
                     "sharemods.com",
-
-                    // Free stream hosts (一部)
-                    "dailymotion.com",
-                    "twitch.tv",
-                    "soundcloud.com",
-                    "vimeo.com",
-                    "archive.org",
-                    "rtve.es",
-                    "rutube.ru",
-
-                    // 以前のリストからの主要なもの
-                    "dood.com",
-                    "filefactory.com",
-                    "pixeldrain.com",
-                    "streamtape.com",
+                    "uploadgig.com",
                     "uptobox.com",
+                    "wdupload.com",
+                    "wayupload.com",
+                    "k2s.cc",           // keep2share
+                    "takefile.net",
+                    "tezfiles.com",
+
+                    // ─── 動画ストリーム系 ───
+                    "dailymotion.com",
+                    "vimeo.com",
+                    "soundcloud.com",
+                    "twitch.tv",
+                    "archive.org",
+                    "dood.com",
+                    "streamtape.com",
                     "voe.sx",
 
-                    // Alldebrid自身
-                    "alldebrid.com"
+                    // ─── Real-Debrid 自身 ───
+                    "real-debrid.com"
                 )
 
                 if (supportedHosts.any { url.contains(it) }) {
@@ -185,12 +178,11 @@ class BrowserActivity : AppCompatActivity() {
         webView.alpha = 0.0f // 透明度を0%（完全な透明）にする
     }
 
+    @Suppress("OVERRIDE_DEPRECATION")
     override fun onBackPressed() {
-        // もしWebViewが履歴を戻れるなら、Webページを一つ戻る
         if (webView.canGoBack()) {
             webView.goBack()
         } else {
-            // 戻る履歴がなければ、ブラウザ（アクティビティ）を閉じる
             super.onBackPressed()
         }
     }
