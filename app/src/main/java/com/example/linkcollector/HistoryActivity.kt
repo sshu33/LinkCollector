@@ -8,6 +8,7 @@ import androidx.appcompat.app.AppCompatActivity
 import android.os.Bundle
 import android.widget.Button
 import android.widget.ImageButton
+import android.widget.LinearLayout
 import android.widget.Toast
 import androidx.appcompat.app.AlertDialog
 import androidx.lifecycle.lifecycleScope
@@ -16,6 +17,9 @@ import androidx.recyclerview.widget.RecyclerView
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import androidx.core.view.ViewCompat
+import androidx.core.view.WindowCompat
+import androidx.core.view.WindowInsetsCompat
 
 class HistoryActivity : AppCompatActivity() {
 
@@ -28,7 +32,16 @@ class HistoryActivity : AppCompatActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        WindowCompat.setDecorFitsSystemWindows(window, false)
         setContentView(R.layout.activity_history)
+
+        val rootView = findViewById<LinearLayout>(R.id.historyRootLayout)
+        ViewCompat.setOnApplyWindowInsetsListener(rootView) { view, insets ->
+            val systemBars = insets.getInsets(WindowInsetsCompat.Type.systemBars())
+            val dp16 = (16 * resources.displayMetrics.density).toInt()
+            view.setPadding(dp16, systemBars.top + dp16, dp16, systemBars.bottom + dp16)
+            WindowInsetsCompat.CONSUMED
+        }
 
         copySelectedButton = findViewById(R.id.copySelectedButton)
         deleteAllButton = findViewById(R.id.deleteAllButton)

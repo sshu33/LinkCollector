@@ -5,10 +5,15 @@ import androidx.room.Database
 import androidx.room.Room
 import androidx.room.RoomDatabase
 
-@Database(entities = [HistoryItem::class], version = 1, exportSchema = false)
+@Database(
+    entities = [HistoryItem::class, FavoriteItem::class],
+    version = 2,  // ★ FavoriteItem 追加のため 1 → 2 に上げる
+    exportSchema = false
+)
 abstract class AppDatabase : RoomDatabase() {
 
     abstract fun historyDao(): HistoryDao
+    abstract fun favoriteDao(): FavoriteDao  // ★ 追加
 
     companion object {
         @Volatile
@@ -20,7 +25,9 @@ abstract class AppDatabase : RoomDatabase() {
                     context.applicationContext,
                     AppDatabase::class.java,
                     "link_collector_database"
-                ).build()
+                )
+                    .fallbackToDestructiveMigration() // ★ バージョンアップ時に既存DBを作り直す
+                    .build()
                 INSTANCE = instance
                 instance
             }

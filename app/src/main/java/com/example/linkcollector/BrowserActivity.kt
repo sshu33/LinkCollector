@@ -5,12 +5,21 @@ import android.app.Activity
 import android.content.Context
 import android.content.Intent
 import android.os.Bundle
+import android.view.LayoutInflater
 import android.view.inputmethod.EditorInfo
 import android.webkit.WebView
 import android.webkit.WebViewClient
 import android.widget.EditText
 import android.widget.ImageButton
+import android.widget.LinearLayout
+import android.widget.TextView
+import android.widget.Button
 import androidx.appcompat.app.AppCompatActivity
+import androidx.lifecycle.lifecycleScope
+import com.google.android.material.bottomsheet.BottomSheetDialog
+import com.google.android.material.textfield.TextInputEditText
+import kotlinx.coroutines.flow.collectLatest
+import kotlinx.coroutines.launch
 
 class BrowserActivity : AppCompatActivity() {
 
@@ -19,7 +28,11 @@ class BrowserActivity : AppCompatActivity() {
     private lateinit var backButton: ImageButton
     private lateinit var forwardButton: ImageButton
     private lateinit var goButton: ImageButton
-    private lateinit var pasteUrlButton: ImageButton // ← この行を追加
+    private lateinit var pasteUrlButton: ImageButton
+    private lateinit var addFavoriteButton: ImageButton
+    private lateinit var favoritesContainer: LinearLayout
+
+    private lateinit var favoriteDao: FavoriteDao
 
     @SuppressLint("SetJavaScriptEnabled")
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -31,7 +44,11 @@ class BrowserActivity : AppCompatActivity() {
         backButton = findViewById(R.id.backButton)
         forwardButton = findViewById(R.id.forwardButton)
         goButton = findViewById(R.id.goButton)
-        pasteUrlButton = findViewById(R.id.pasteUrlButton) // ← この行を追加
+        pasteUrlButton = findViewById(R.id.pasteUrlButton)
+        addFavoriteButton = findViewById(R.id.addFavoriteButton)
+        favoritesContainer = findViewById(R.id.favoritesContainer)
+
+        favoriteDao = AppDatabase.getDatabase(this).favoriteDao()
 
         webView.settings.javaScriptEnabled = true
 
@@ -40,96 +57,54 @@ class BrowserActivity : AppCompatActivity() {
                 if (url == null) return false
 
                 val supportedHosts = listOf(
-                    // ─── メジャーホスト ───
-                    "1fichier.com",
-                    "rapidgator.net",
-                    "turbobit.net",
-                    "hitfile.net",
-                    "mega.nz",
-                    "4shared.com",
-                    "mediafire.com",
-                    "drive.google.com",
-                    "scribd.com",
-                    "pixeldrain.com",
-                    "filefactory.com",
-
-                    // ─── アップローダー系 ───
-                    "ddownload.com",
-                    "fastbit.cc",
-                    "filedot.to",
-                    "filespace.com",
-                    "hexupload.net",
-                    "isra.cloud",
-                    "katfile.com",
-                    "mexashare.com",
-                    "mp4upload.com",
-                    "nitroflare.com",
-                    "prefiles.com",
-                    "sharemods.com",
-                    "uploadgig.com",
-                    "uptobox.com",
-                    "wdupload.com",
-                    "wayupload.com",
-                    "k2s.cc",           // keep2share
-                    "takefile.net",
-                    "tezfiles.com",
-
-                    // ─── 動画ストリーム系 ───
-                    "dailymotion.com",
-                    "vimeo.com",
-                    "soundcloud.com",
-                    "twitch.tv",
-                    "archive.org",
-                    "dood.com",
-                    "streamtape.com",
-                    "voe.sx",
-
-                    // ─── Real-Debrid 自身 ───
-                    "real-debrid.com"
+                    "1fichier.com", "rapidgator.net", "turbobit.net", "hitfile.net",
+                    "mega.nz", "4shared.com", "mediafire.com", "drive.google.com",
+                    "scribd.com", "pixeldrain.com", "filefactory.com", "ddownload.com",
+                    "fastbit.cc", "filedot.to", "filespace.com", "hexupload.net",
+                    "isra.cloud", "katfile.com", "mexashare.com", "mp4upload.com",
+                    "nitroflare.com", "prefiles.com", "sharemods.com", "uploadgig.com",
+                    "uptobox.com", "wdupload.com", "wayupload.com", "k2s.cc",
+                    "takefile.net", "tezfiles.com", "dailymotion.com", "vimeo.com",
+                    "soundcloud.com", "twitch.tv", "archive.org", "dood.com",
+                    "streamtape.com", "voe.sx", "real-debrid.com"
                 )
 
                 if (supportedHosts.any { url.contains(it) }) {
-                    // --- 新しい判定コードここまで ---
-
-                    // メイン画面に返すためのデータ（Intent）を作成
                     val resultIntent = Intent()
                     resultIntent.putExtra("newLink", url)
                     setResult(Activity.RESULT_OK, resultIntent)
-                    // このブラウザ画面を閉じる
                     finish()
-                    return true // WebViewにはこのURLを読み込ませない
+                    return true
                 }
                 return false
             }
 
             override fun onPageFinished(view: WebView?, url: String?) {
                 super.onPageFinished(view, url)
-                // ページ読み込み完了時にスクロール位置を復元
                 view?.post { view.scrollY = WebViewState.lastScrollY }
             }
         }
 
-        // 記憶したURLを読み込む
         val initialUrl = WebViewState.lastUrl ?: "https://www.google.com"
         webView.loadUrl(initialUrl)
         urlEditText.setText(initialUrl)
 
         setupActionButtons()
+        observeFavorites()
     }
 
     private fun setupActionButtons() {
         backButton.setOnClickListener { if (webView.canGoBack()) webView.goBack() }
         forwardButton.setOnClickListener { if (webView.canGoForward()) webView.goForward() }
-        goButton.setOnClickListener { loadUrlFromEditText() }
+        goButton.setOnClickListener { finish() }
 
-        // ★新しい貼り付けボタンの処理を追加
         pasteUrlButton.setOnClickListener {
             val clipboard = getSystemService(Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
             if (clipboard.hasPrimaryClip()) {
                 val pasteData = clipboard.primaryClip?.getItemAt(0)?.text?.toString()
                 if (!pasteData.isNullOrBlank()) {
                     urlEditText.setText(pasteData)
-                    loadUrlFromEditText() // 貼り付けて即ロード
+                    loadUrlFromEditText()
                 }
             }
         }
@@ -141,16 +116,84 @@ class BrowserActivity : AppCompatActivity() {
             } else { false }
         }
 
-        // urlEditText.setOnClickListener { urlEditText.selectAll() } // ← この行を削除、またはコメントアウト
+        // ★ お気に入り追加ボタン
+        addFavoriteButton.setOnClickListener {
+            showAddFavoriteDialog()
+        }
+    }
+
+    private fun showAddFavoriteDialog() {
+        val currentUrl = webView.url ?: return
+        val currentTitle = webView.title ?: currentUrl
+
+        val dialog = BottomSheetDialog(this)
+        val view = LayoutInflater.from(this).inflate(R.layout.dialog_add_favorite, null)
+        dialog.setContentView(view)
+
+        val nameInput = view.findViewById<TextInputEditText>(R.id.favoriteNameEditText)
+        val urlInput = view.findViewById<TextInputEditText>(R.id.favoriteUrlEditText)
+        val cancelButton = view.findViewById<Button>(R.id.favoriteCancelButton)
+        val addButton = view.findViewById<Button>(R.id.favoriteAddButton)
+
+        nameInput.setText(currentTitle)
+        urlInput.setText(currentUrl)
+
+        cancelButton.setOnClickListener { dialog.dismiss() }
+
+        addButton.setOnClickListener {
+            val name = nameInput.text.toString().trim()
+            val url = urlInput.text.toString().trim()
+            if (name.isNotBlank() && url.isNotBlank()) {
+                lifecycleScope.launch {
+                    favoriteDao.insert(FavoriteItem(name = name, url = url))
+                }
+                dialog.dismiss()
+            }
+        }
+
+        dialog.show()
+    }
+
+    private fun observeFavorites() {
+        lifecycleScope.launch {
+            favoriteDao.getAll().collectLatest { favorites ->
+                favoritesContainer.removeAllViews()
+                favorites.forEach { item ->
+                    addFavoriteChip(item)
+                }
+            }
+        }
+    }
+
+    @SuppressLint("InflateParams")
+    private fun addFavoriteChip(item: FavoriteItem) {
+        val chip = LayoutInflater.from(this)
+            .inflate(R.layout.item_favorite_chip, favoritesContainer, false)
+        val label = chip.findViewById<TextView>(R.id.chipLabel)
+        label.text = item.name
+
+        // タップで移動
+        chip.setOnClickListener {
+            webView.loadUrl(item.url)
+            urlEditText.setText(item.url)
+        }
+
+        // 長押しで削除
+        chip.setOnLongClickListener {
+            lifecycleScope.launch {
+                favoriteDao.delete(item)
+            }
+            true
+        }
+
+        favoritesContainer.addView(chip)
     }
 
     private fun loadUrlFromEditText() {
         var url = urlEditText.text.toString()
         if (url.isNotBlank()) {
-            // ★新しいセッションを開始する前にお掃除
-            WebViewState.lastScrollY = 0 // スクロール位置の記憶をリセット
-            webView.clearHistory()      // Webの閲覧履歴をリセット
-
+            WebViewState.lastScrollY = 0
+            webView.clearHistory()
             if (!url.startsWith("http://") && !url.startsWith("https://")) {
                 url = "https://www.google.com/search?q=$url"
             }
@@ -165,17 +208,13 @@ class BrowserActivity : AppCompatActivity() {
 
     override fun onResume() {
         super.onResume()
-        // 画面が再度表示されたら、ごく僅かな時間をおいてからWebViewを表示させる
-        webView.postDelayed({
-            webView.alpha = 1.0f // 透明度を100%（不透明）に戻す
-        }, 50)
+        webView.postDelayed({ webView.alpha = 1.0f }, 50)
     }
 
     override fun onPause() {
         super.onPause()
-        // 画面が非表示になる直前に、状態を保存し、WebViewを透明にする
         saveWebViewState()
-        webView.alpha = 0.0f // 透明度を0%（完全な透明）にする
+        webView.alpha = 0.0f
     }
 
     @Suppress("OVERRIDE_DEPRECATION")
@@ -188,7 +227,6 @@ class BrowserActivity : AppCompatActivity() {
     }
 }
 
-// WebViewの状態をアプリ内で共有するためのシングルトンオブジェクト
 object WebViewState {
     var lastUrl: String? = "https://www.google.com"
     var lastScrollY: Int = 0
