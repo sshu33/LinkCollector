@@ -20,6 +20,7 @@ import com.google.android.material.bottomsheet.BottomSheetDialog
 import com.google.android.material.textfield.TextInputEditText
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.launch
+import android.util.Log
 
 class BrowserActivity : AppCompatActivity() {
 
@@ -55,6 +56,7 @@ class BrowserActivity : AppCompatActivity() {
         webView.webViewClient = object : WebViewClient() {
             override fun shouldOverrideUrlLoading(view: WebView?, url: String?): Boolean {
                 if (url == null) return false
+                Log.d("LinkPick", "override: $url") // ▼確認用ログ
 
                 val supportedHosts = listOf(
                     "1fichier.com", "rapidgator.net", "turbobit.net", "hitfile.net",
@@ -66,7 +68,9 @@ class BrowserActivity : AppCompatActivity() {
                     "uptobox.com", "wdupload.com", "wayupload.com", "k2s.cc",
                     "takefile.net", "tezfiles.com", "dailymotion.com", "vimeo.com",
                     "soundcloud.com", "twitch.tv", "archive.org", "dood.com",
-                    "streamtape.com", "voe.sx", "real-debrid.com"
+                    "streamtape.com", "voe.sx", "real-debrid.com",
+                    "dailyuploads.net", "frdl.to", "frdl.io", "freedl.ink", "uploady.io",
+                    "katfile.biz", "katfile.cloud", "katfile.online"
                 )
 
                 if (supportedHosts.any { url.contains(it) }) {
@@ -77,6 +81,12 @@ class BrowserActivity : AppCompatActivity() {
                     return true
                 }
                 return false
+            }
+
+            // ▼確認用ログ
+            override fun onPageStarted(view: WebView?, url: String?, favicon: android.graphics.Bitmap?) {
+                super.onPageStarted(view, url, favicon)
+                Log.d("LinkPick", "started: $url")
             }
 
             override fun onPageFinished(view: WebView?, url: String?) {
