@@ -138,8 +138,14 @@ class MainActivity : AppCompatActivity() {
     }
 
     private val fileDebridApi by lazy {
+        val client = okhttp3.OkHttpClient.Builder()
+            .connectTimeout(30, java.util.concurrent.TimeUnit.SECONDS)
+            .readTimeout(120, java.util.concurrent.TimeUnit.SECONDS)
+            .writeTimeout(30, java.util.concurrent.TimeUnit.SECONDS)
+            .build()
         Retrofit.Builder()
             .baseUrl("https://www.storage-portal.com/api/external/v1/")
+            .client(client)
             .addConverterFactory(GsonConverterFactory.create(GsonBuilder().create()))
             .build()
             .create(FileDebridApiService::class.java)
@@ -180,8 +186,10 @@ class MainActivity : AppCompatActivity() {
             WindowInsetsCompat.CONSUMED
         }
 
+        migrateOldKey()
+
         settingsButton.setOnClickListener {
-            showApiKeyDialog()
+            showServiceDialog()
         }
 
         settingsButton.setOnLongClickListener {
@@ -256,14 +264,63 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    private fun getApiKey(): String {
-        val prefs = getSharedPreferences("AppPrefs", Context.MODE_PRIVATE)
-        return prefs.getString("rd_api_key", "") ?: ""
+    private fun prefs() = getSharedPreferences("AppPrefs", Context.MODE_PRIVATE)
+
+    // 使用中のサービス（"rd" = Real-Debrid / "fd" = File Debrid）
+    private fun getService(): String = prefs().getString("service", "rd") ?: "rd"
+
+    private fun setService(service: String) {
+        prefs().edit().putString("service", service).apply()
     }
 
+    private fun isFileDebrid(): Boolean = getService() == "fd"
+
+    private fun keyName(service: String) = if (service == "fd") "fd_api_key" else "rd_api_key"
+
+    private fun serviceLabel(service: String) = if (service == "fd") "File Debrid" else "Real-Debrid"
+
+    // 使用中のサービスのキー
+    private fun getApiKey(): String = getApiKey(getService())
+
+    private fun getApiKey(service: String): String =
+        prefs().getString(keyName(service), "") ?: ""
+
+    // 使用中のサービスのキーとして保存
     private fun saveApiKey(key: String) {
-        val prefs = getSharedPreferences("AppPrefs", Context.MODE_PRIVATE)
-        prefs.edit().putString("rd_api_key", key).apply()
+        prefs().edit().putString(keyName(getService()), key).apply()
+    }
+
+    // 以前 Real-Debrid の欄に File Debrid のキー（obb_）を入れていた場合は File Debrid 側へ移す
+    private fun migrateOldKey() {
+        val old = prefs().getString("rd_api_key", "") ?: ""
+        if (old.startsWith("obb_")) {
+            prefs().edit()
+                .putString("fd_api_key", old)
+                .putString("rd_api_key", "")
+                .putString("service", "fd")
+                .apply()
+        }
+    }
+
+    // 設定ボタン：使うサービスを選ぶ
+    private fun showServiceDialog() {
+        val services = arrayOf("rd", "fd")
+        val labels = arrayOf("Real-Debrid", "File Debrid")
+        var selected = services.indexOf(getService()).coerceAtLeast(0)
+
+        androidx.appcompat.app.AlertDialog.Builder(this)
+            .setTitle("使用するサービス")
+            .setSingleChoiceItems(labels, selected) { _, which -> selected = which }
+            .setPositiveButton("決定") { _, _ ->
+                setService(services[selected])
+                showToast("${labels[selected]} に切り替えました")
+            }
+            .setNeutralButton("APIキーを設定") { _, _ ->
+                setService(services[selected])
+                showApiKeyDialog()
+            }
+            .setNegativeButton("キャンセル", null)
+            .show()
     }
 
     private fun showApiKeyDialog() {
@@ -280,6 +337,8 @@ class MainActivity : AppCompatActivity() {
         val saveButton = view.findViewById<Button>(R.id.saveButton)
         val cancelButton = view.findViewById<Button>(R.id.cancelButton)
 
+        (editText.parent?.parent as? com.google.android.material.textfield.TextInputLayout)
+            ?.hint = "${serviceLabel(getService())} のAPIキー"
         editText.setText(getApiKey())
 
         saveButton.setOnClickListener {
@@ -312,12 +371,12 @@ class MainActivity : AppCompatActivity() {
             return
         }
 
-        showToast("変換を開始します...")
+        showToast("${serviceLabel(getService())} で変換を開始します...")
         linksEditText.setText("変換中...\n\n")
 
         lifecycleScope.launch {
             // ▼File Debrid は同時変換で処理
-            if (apiKey.startsWith("obb_")) {
+            if (isFileDebrid()) {
                 fileDebridBatch(apiKey, links, originalLinks)
                 return@launch
             }
@@ -534,13 +593,13 @@ class MainActivity : AppCompatActivity() {
 
     // --- File Debrid の一括変換（同時実行） ---
     private suspend fun fileDebridBatch(apiKey: String, links: List<String>, originalLinks: String) {
-        val semaphore = Semaphore(FD_PARALLEL)
+        val semaphores = links.map { fdHostKey(it) }.distinct().associateWith { Semaphore(FD_PARALLEL) }
         val results = arrayOfNulls<FdResult>(links.size)
 
         coroutineScope {
             links.forEachIndexed { i, link ->
                 launch {
-                    semaphore.withPermit {
+                    semaphores.getValue(fdHostKey(link)).withPermit {
                         val r = fileDebridWithRetry(apiKey, link)
                         results[i] = r
                         if (r.download != null) {
@@ -606,12 +665,23 @@ class MainActivity : AppCompatActivity() {
         linksEditText.setSelection(linksEditText.text.length)
     }
 
-    // status 55（同時実行数の上限）のときは待ってから再試行する
+    // リンクのホストをまとめる（katfile.biz と katfile.com などを同じホストとして数える）
+    private fun fdHostKey(link: String): String {
+        val host = runCatching { java.net.URI(link.trim()).host }.getOrNull()
+            ?.lowercase()?.removePrefix("www.") ?: return "other"
+        if (host == "rg.to") return "rapidgator"
+        val known = listOf("rapidgator", "katfile", "dailyuploads", "turbobit", "frdl", "uploady")
+        return known.firstOrNull { host.contains(it) } ?: host
+    }
+
+    // status 55（同時実行数の上限）とタイムアウトのときは待ってから再試行する
     private suspend fun fileDebridWithRetry(apiKey: String, link: String): FdResult {
         val waits = listOf(10_000L, 20_000L, 40_000L)
         var result = fileDebridSafe(apiKey, link)
         for (w in waits) {
-            if (result.error?.contains("（status 55）") != true) break
+            val err = result.error ?: break
+            val retry = err.contains("（status 55）") || err.contains("SocketTimeoutException")
+            if (!retry) break
             delay(w)
             result = fileDebridSafe(apiKey, link)
         }
@@ -629,8 +699,8 @@ class MainActivity : AppCompatActivity() {
 
     // --- 確認用：ホストごとの上限を表示（確認が終わったら消してOK） ---
     private fun checkFileDebridLimits() {
-        val apiKey = getApiKey()
-        if (!apiKey.startsWith("obb_")) {
+        val apiKey = getApiKey("fd")
+        if (apiKey.isBlank()) {
             showToast("File DebridのAPIキーを設定してください")
             return
         }
