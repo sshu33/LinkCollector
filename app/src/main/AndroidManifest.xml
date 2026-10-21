@@ -39,7 +39,7 @@
 
     <queries>
         <package android:name="com.dv.adm" />
-        <package android:name="idm.internet.download.manager" />
+        <package android:name="idm.internet.download.manager.plus" />
     </queries>
 
 </manifest>

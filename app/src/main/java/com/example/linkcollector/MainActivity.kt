@@ -95,6 +95,9 @@ data class FdResult(
 // File Debrid で同時に変換する数（上限が分かったら書き換える）
 private const val FD_PARALLEL = 3
 
+// 結果の中で、失敗したリンクの前に入れる区切りの行
+private const val FAILED_MARK = "--- 失敗 ---"
+
 // --- メインのアクティビティ ---
 class MainActivity : AppCompatActivity() {
 
@@ -273,8 +276,6 @@ class MainActivity : AppCompatActivity() {
         prefs().edit().putString("service", service).apply()
     }
 
-    private fun isFileDebrid(): Boolean = getService() == "fd"
-
     private fun keyName(service: String) = if (service == "fd") "fd_api_key" else "rd_api_key"
 
     private fun serviceLabel(service: String) = if (service == "fd") "File Debrid" else "Real-Debrid"
@@ -357,84 +358,15 @@ class MainActivity : AppCompatActivity() {
 
     private fun debridLinks() {
         val originalLinks = linksEditText.text.toString()
-        val links = originalLinks.lines().filter { it.isNotBlank() }
+        val links = originalLinks.lines()
+            .filter { it.isNotBlank() && it.trim() != FAILED_MARK }
 
         if (links.isEmpty()) {
             showToast("リンクが入力されていません")
             return
         }
 
-        val apiKey = getApiKey()
-        if (apiKey.isBlank()) {
-            showToast("APIキーが設定されていません")
-            showApiKeyDialog()
-            return
-        }
-
-        showToast("${serviceLabel(getService())} で変換を開始します...")
-        linksEditText.setText("変換中...\n\n")
-
-        lifecycleScope.launch {
-            // ▼File Debrid は同時変換で処理
-            if (isFileDebrid()) {
-                fileDebridBatch(apiKey, links, originalLinks)
-                return@launch
-            }
-
-            val debridedLinks = mutableListOf<String>()
-            var authenticationErrorOccurred = false
-
-            for (link in links) {
-                try {
-                    val response = withContext(Dispatchers.IO) {
-                        // 【変更点】realDebridApi を使い、ヘッダーに "Bearer キー" を入れる
-                        realDebridApi.unlockLink(authHeader = "Bearer $apiKey", link = link)
-                    }
-
-                    if (response.isSuccessful) {
-                        val body = response.body()
-                        // 【変更点】Real-Debridの返り値のキー 'download' を使う
-                        if (body?.download != null) {
-                            debridedLinks.add(body.download)
-                            val filename = body.filename ?: "unknown"
-                            linksEditText.append("成功: $filename\n")
-
-                            val historyItem = HistoryItem(
-                                filename = filename,
-                                premiumLink = body.download,
-                                timestamp = System.currentTimeMillis()
-                            )
-                            withContext(Dispatchers.IO) {
-                                historyDao.insert(historyItem)
-                            }
-                        } else {
-                            linksEditText.append("失敗: リンク取得エラー\n")
-                        }
-                    } else {
-                        if (response.code() == 401 || response.code() == 403) {
-                            authenticationErrorOccurred = true
-                            break
-                        }
-                        linksEditText.append("失敗: HTTPエラー ${response.code()}\n")
-                    }
-                } catch (e: Exception) {
-                    linksEditText.append("失敗: 通信エラー\n")
-                }
-            }
-
-            if (authenticationErrorOccurred) {
-                showToast("Real-Debridの認証エラー。APIキーを確認してください。")
-                linksEditText.setText(originalLinks)
-                showApiKeyDialog()
-            } else {
-                val resultText = debridedLinks.joinToString("\n")
-                linksEditText.setText(resultText)
-                showToast("変換完了！")
-                lastDebridedLinks = debridedLinks
-                updateButtonState(true)
-            }
-            linksEditText.setSelection(linksEditText.text.length)
-        }
+        startConversion(getService(), links, emptyList(), originalLinks, allowSwitch = true)
     }
 
     private fun copyToClipboard() {
@@ -449,14 +381,15 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    private fun showToast(message: String) {
+    private val hideMessage = Runnable { messageTextView.visibility = View.GONE }
+
+    private fun showToast(message: String, durationMs: Long = 2500) {
         messageTextView.text = message
         messageTextView.visibility = View.VISIBLE
 
-        // 2.5秒後にメッセージを非表示にする
-        messageTextView.postDelayed({
-            messageTextView.visibility = View.GONE
-        }, 2500)
+        // 前のメッセージを消す予約を取り消してから、新しく予約する
+        messageTextView.removeCallbacks(hideMessage)
+        messageTextView.postDelayed(hideMessage, durationMs)
     }
 
     // updateButtonState メソッド
@@ -494,7 +427,7 @@ class MainActivity : AppCompatActivity() {
                 showToast("リンクをコピーしました！") // ←ここも統一
             }
         }
-        val packageName = "idm.internet.download.manager"
+        val packageName = "idm.internet.download.manager.plus"
         val intent = packageManager.getLaunchIntentForPackage(packageName)
         if (intent != null) {
             intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
@@ -591,79 +524,219 @@ class MainActivity : AppCompatActivity() {
     private fun JsonObject.bool(key: String): Boolean =
         runCatching { get(key).asBoolean }.getOrDefault(false)
 
-    // --- File Debrid の一括変換（同時実行） ---
-    private suspend fun fileDebridBatch(apiKey: String, links: List<String>, originalLinks: String) {
-        val semaphores = links.map { fdHostKey(it) }.distinct().associateWith { Semaphore(FD_PARALLEL) }
-        val results = arrayOfNulls<FdResult>(links.size)
-
-        coroutineScope {
-            links.forEachIndexed { i, link ->
-                launch {
-                    semaphores.getValue(fdHostKey(link)).withPermit {
-                        val r = fileDebridWithRetry(apiKey, link)
-                        results[i] = r
-                        if (r.download != null) {
-                            linksEditText.append("成功: ${r.filename ?: "unknown"}\n")
-                        } else if (!r.authError) {
-                            linksEditText.append("失敗: ${r.error}\n")
-                        }
-                    }
-                }
-            }
-        }
-
-        if (results.any { it?.authError == true }) {
-            showToast("File Debridの認証エラー。APIキーを確認してください。")
-            linksEditText.setText(originalLinks)
-            showApiKeyDialog()
+    // --- 変換の本体（Real-Debrid / File Debrid 共通） ---
+    private fun startConversion(
+        service: String,
+        links: List<String>,
+        keepSuccess: List<String>,
+        restoreText: String,
+        allowSwitch: Boolean
+    ) {
+        val label = serviceLabel(service)
+        val apiKey = getApiKey(service)
+        if (apiKey.isBlank()) {
+            showToast("${label}のAPIキーが設定されていません")
+            if (service == getService()) showApiKeyDialog()
             return
         }
 
-        // 結果は元のリンクの順番で並べる
-        val debridedLinks = mutableListOf<String>()
-        val failures = mutableListOf<String>()
-        links.forEachIndexed { i, link ->
-            val r = results[i]
-            if (r?.download != null) {
-                debridedLinks.add(r.download)
-            } else {
-                failures.add("$link\n→ ${r?.error}")
-            }
-        }
+        showToast("$label で変換を開始します...")
 
-        withContext(Dispatchers.IO) {
-            results.forEach { r ->
+        lifecycleScope.launch {
+            val total = links.size
+            val results = arrayOfNulls<FdResult>(total)
+            val log = StringBuilder()
+            var done = 0
+
+            // 1件終わるごとに進み具合を表示
+            fun record(i: Int, r: FdResult) {
+                results[i] = r
+                done++
+                if (r.download != null) {
+                    log.append("成功: ${r.filename ?: "unknown"}\n")
+                } else if (!r.authError) {
+                    log.append("失敗: ${r.error}\n")
+                }
+                linksEditText.setText("$label で変換中... $done/$total\n\n$log")
+            }
+
+            linksEditText.setText("$label で変換中... 0/$total\n\n")
+
+            if (service == "fd") {
+                // File Debrid：ホストごとに FD_PARALLEL 件ずつ同時に変換
+                val semaphores = links.map { fdHostKey(it) }.distinct()
+                    .associateWith { Semaphore(FD_PARALLEL) }
+                coroutineScope {
+                    links.forEachIndexed { i, link ->
+                        launch {
+                            semaphores.getValue(fdHostKey(link)).withPermit {
+                                record(i, fileDebridWithRetry(apiKey, link))
+                            }
+                        }
+                    }
+                }
+            } else {
+                // Real-Debrid：今までどおり1件ずつ順番に変換
+                for ((i, link) in links.withIndex()) {
+                    val r = realDebridUnlock(apiKey, link)
+                    record(i, r)
+                    if (r.authError) break
+                }
+            }
+
+            if (results.any { it?.authError == true }) {
+                showToast("${label}の認証エラー。APIキーを確認してください。")
+                linksEditText.setText(restoreText)
+                linksEditText.setSelection(linksEditText.text.length)
+                if (service == getService()) showApiKeyDialog()
+                return@launch
+            }
+
+            // 結果は元のリンクの順番で並べる
+            val newSuccess = mutableListOf<FdResult>()
+            val failedLinks = mutableListOf<String>()
+            val failures = mutableListOf<String>()
+            links.forEachIndexed { i, link ->
+                val r = results[i]
                 if (r?.download != null) {
+                    newSuccess.add(r)
+                } else {
+                    failedLinks.add(link)
+                    failures.add("$link\n→ ${r?.error ?: "未処理"}")
+                }
+            }
+
+            withContext(Dispatchers.IO) {
+                newSuccess.forEach { r ->
+                    val dl = r.download ?: return@forEach
                     historyDao.insert(
                         HistoryItem(
                             filename = r.filename ?: "unknown",
-                            premiumLink = r.download,
+                            premiumLink = dl,
                             timestamp = System.currentTimeMillis()
                         )
                     )
                 }
             }
-        }
 
-        linksEditText.setText(debridedLinks.joinToString("\n"))
-        showToast("変換完了！")
-        lastDebridedLinks = debridedLinks
-        updateButtonState(true)
+            val successLinks = keepSuccess + newSuccess.mapNotNull { it.download }
+            showResult(successLinks, failedLinks)
+            val doneMsg = if (failedLinks.isEmpty()) "変換完了！"
+            else "変換完了（失敗 ${failedLinks.size}件）"
+            showToast(doneMsg)
 
-        if (failures.isNotEmpty()) {
-            val text = failures.joinToString("\n\n")
-            androidx.appcompat.app.AlertDialog.Builder(this@MainActivity)
-                .setTitle("失敗 ${failures.size}件")
-                .setMessage(text)
-                .setPositiveButton("閉じる", null)
-                .setNeutralButton("コピー") { _, _ ->
-                    val clipboard = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-                    clipboard.setPrimaryClip(ClipData.newPlainText("Errors", text))
+            // File Debrid のときは残量を取得して表示（失敗のダイアログは待たせない）
+            if (service == "fd") {
+                lifecycleScope.launch {
+                    val left = fetchFileDebridLeft()
+                    if (left != null) showToast("$doneMsg　残り $left", 6000)
                 }
-                .show()
+            }
+
+            if (failures.isNotEmpty()) {
+                showFailureDialog(service, failures, failedLinks, successLinks, allowSwitch)
+            }
         }
-        linksEditText.setSelection(linksEditText.text.length)
     }
+
+    // Real-Debrid で1件変換する（結果の形は File Debrid と同じ FdResult を使う）
+    private suspend fun realDebridUnlock(apiKey: String, link: String): FdResult =
+        withContext(Dispatchers.IO) {
+            try {
+                val response = realDebridApi.unlockLink(authHeader = "Bearer $apiKey", link = link)
+                if (response.isSuccessful) {
+                    val body = response.body()
+                    if (body?.download != null) {
+                        FdResult(download = body.download, filename = body.filename)
+                    } else {
+                        FdResult(error = "リンク取得エラー")
+                    }
+                } else if (response.code() == 401 || response.code() == 403) {
+                    FdResult(authError = true)
+                } else {
+                    val raw = response.errorBody()?.string()?.take(150)
+                    FdResult(error = "HTTPエラー ${response.code()}" + (raw?.let { ": $it" } ?: ""))
+                }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                FdResult(error = "通信エラー: ${e.javaClass.simpleName} ${e.message ?: ""}")
+            }
+        }
+
+    // 成功したリンクを上に、失敗したリンクを区切りの下に並べる
+    private fun showResult(successLinks: List<String>, failedLinks: List<String>) {
+        val sb = StringBuilder(successLinks.joinToString("\n"))
+        if (failedLinks.isNotEmpty()) {
+            if (sb.isNotEmpty()) sb.append("\n\n")
+            sb.append(FAILED_MARK).append("\n").append(failedLinks.joinToString("\n"))
+        }
+        linksEditText.setText(sb.toString())
+        linksEditText.setSelection(linksEditText.text.length)
+        lastDebridedLinks = successLinks
+        updateButtonState(successLinks.isNotEmpty())
+    }
+
+    // 失敗の理由の一覧（もう一方のサービスで変換し直すボタン付き）
+    private fun showFailureDialog(
+        service: String,
+        failures: List<String>,
+        failedLinks: List<String>,
+        successLinks: List<String>,
+        allowSwitch: Boolean
+    ) {
+        val text = failures.joinToString("\n\n")
+        val other = if (service == "fd") "rd" else "fd"
+
+        val builder = androidx.appcompat.app.AlertDialog.Builder(this)
+            .setTitle("失敗 ${failures.size}件")
+            .setMessage(text)
+            .setNegativeButton("閉じる", null)
+            .setNeutralButton("コピー") { _, _ ->
+                val clipboard = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                clipboard.setPrimaryClip(ClipData.newPlainText("Errors", text))
+            }
+
+        if (allowSwitch) {
+            builder.setPositiveButton("${serviceLabel(other)}で変換") { _, _ ->
+                startConversion(
+                    other,
+                    failedLinks,
+                    successLinks,
+                    linksEditText.text.toString(),
+                    allowSwitch = false
+                )
+            }
+        }
+        builder.show()
+    }
+
+    // File Debrid の残量を「21.3GB」のような文字で返す（取得できなければ null）
+    private suspend fun fetchFileDebridLeft(): String? {
+        val apiKey = getApiKey("fd")
+        if (apiKey.isBlank()) return null
+        return try {
+            val res = withContext(Dispatchers.IO) { fileDebridApi.account("Bearer $apiKey") }
+            val body = res.body() ?: return null
+            if (!body.isJsonObject) return null
+            val left = body.asJsonObject.unwrapData().get("trafficleft")?.asLong ?: return null
+            formatBytes(left)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            null
+        }
+    }
+
+    private fun formatBytes(bytes: Long): String {
+        val gb = bytes / 1_073_741_824.0
+        return if (gb >= 1) {
+            String.format(java.util.Locale.US, "%.1fGB", gb)
+        } else {
+            String.format(java.util.Locale.US, "%.0fMB", bytes / 1_048_576.0)
+        }
+    }
+
 
     // リンクのホストをまとめる（katfile.biz と katfile.com などを同じホストとして数える）
     private fun fdHostKey(link: String): String {
